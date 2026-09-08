@@ -607,6 +607,35 @@ func TestServeFile(t *testing.T) {
 		ServeFile(file, w, r, false, true, false, false)
 		if aws.IsMockApi {
 			test.ResponseBodyContains(t, w, "https://redirect.url")
+
+			// Proxy-download mode should stream the file content directly instead of redirecting
+			config.Aws.ProxyDownload = true
+			ok = aws.Init(config.Aws)
+			test.IsEqualBool(t, ok, true)
+			err := os.MkdirAll("data", 0777)
+			test.IsNil(t, err)
+			err = os.WriteFile("data/x341354656543213246465465465432456898794", []byte("aws proxy content"), 0777)
+			test.IsNil(t, err)
+			r = httptest.NewRequest("GET", "/", nil)
+			w = httptest.NewRecorder()
+			file, result = GetFile("awsTest1234567890123")
+			test.IsEqualBool(t, result, true)
+			ServeFile(file, w, r, false, true, false, false)
+			test.ResponseBodyIs(t, w, "aws proxy content")
+			os.Remove("data/x341354656543213246465465465432456898794")
+
+			// An error from aws.ServeFile (e.g. the fixture file no longer exists) must be
+			// handled gracefully instead of panicking - see FileServing.go's ServeFile.
+			r = httptest.NewRequest("GET", "/", nil)
+			w = httptest.NewRecorder()
+			file, result = GetFile("awsTest1234567890123")
+			test.IsEqualBool(t, result, true)
+			ServeFile(file, w, r, false, true, false, false)
+			test.ResponseBodyIs(t, w, "Error serving file")
+
+			config.Aws.ProxyDownload = false
+			ok = aws.Init(config.Aws)
+			test.IsEqualBool(t, ok, true)
 		} else {
 			test.ResponseBodyContains(t, w, "<a href=\"http")
 		}
