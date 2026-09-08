@@ -30,12 +30,20 @@ make test-specific TEST_PACKAGE=<path relative to module root>
 make coverage
 make coverage-specific TEST_PACKAGE=<path>
 
+# Run the MariaDB/MySQL provider tests against a real server (see env vars below)
+make test-mariadb
+
+# Run the PostgreSQL provider tests against a real server (see env vars below)
+make test-postgres
+
 # Format code before committing
 go fmt ./...
 
 # Build the local Docker image
 make docker-build
 ```
+
+`test-mariadb`/`test-postgres` need a real, reachable, disposable database (its tables are dropped and recreated on every run) configured via `GOKAPI_MARIADB_HOST`/`_DBNAME`/`_USER`/`_PASSWORD` or `GOKAPI_POSTGRES_HOST`/`_DBNAME`/`_USER`/`_PASSWORD` env vars (defaults: `127.0.0.1:3306`/`127.0.0.1:5432`, db `gokapi_test`, user `gokapi`, password `secret`). They are not part of `make test`/`make test-all` or CI since there's no in-process mock for either engine.
 
 Equivalent raw `go test` invocations (useful for running a single test with `-run`):
 
@@ -52,6 +60,7 @@ go test ./internal/storage/... -run TestSomething -tags=test,awsmock -v
 - `noaws` — builds/tests the AWS-free slim variant (`Aws_slim.go`) of the S3 driver.
 - `integration` — enables slower integration tests (excluded from the default `Webserver_test.go` run via `!integration`).
 - `tools` — gates the `build/go-generate/*.go` code-generation scripts; not part of normal builds.
+- `mariadbtest` / `postgrestest` — gate the `database/provider/{mariadb,postgres}` tests, which require a real, reachable server (env-var configured, see `make test-mariadb`/`make test-postgres` above). Not part of `make test`/`make test-all` or CI.
 
 CI (`.github/workflows/test-code.yml`) runs all four permutations (`awsmock`, `noaws`, `noaws+integration`, `awstest`), so don't assume `make test` alone covers everything before pushing.
 
@@ -64,7 +73,9 @@ CI (`.github/workflows/test-code.yml`) runs all four permutations (`awsmock`, `n
 `internal/storage/filesystem` defines a `System` driver interface (`internal/storage/filesystem/interfaces`) implemented by `localstorage` and `s3filesystem`. The active driver is selected at runtime (`filesystem.SetAws()` if cloud config is present and reachable, otherwise local disk). File request uploads, chunked uploads (`internal/storage/chunking`), and presigned download links (`internal/storage/presign`) all go through this abstraction so callers don't need to know which backend is active.
 
 ### Database abstraction (`internal/configuration/database`)
-`dbabstraction` defines the `Database` interface, implemented by providers in `database/provider/{sqlite,redis}`. `dbcache` provides an in-memory caching layer in front of the active provider. `database.Migrate()` can copy all data (API keys, users, files, hotlinks, file requests) between two database backends — this backs the `--migrate-db` CLI flow (`database/migration`).
+`dbabstraction` defines the `Database` interface, implemented by providers in `database/provider/{sqlite,redis,mariadb,postgres}`. `dbcache` provides an in-memory caching layer in front of the active provider. `database.Migrate()` can copy all data (API keys, users, files, hotlinks, file requests) between two database backends — this backs the `--migrate-db` CLI flow (`database/migration`).
+
+The `mariadb`/`postgres` providers speak `database/sql` through pure-Go drivers (`go-sql-driver/mysql`, `jackc/pgx/v5/stdlib`, both CGO-free), each tracking its own schema version in a `SchemaVersion`/`schemaversion` table and creating tables on first connect if missing (`tableExists()` check against `information_schema`). Mind the dialect differences when touching them: MariaDB uses `?` placeholders, `REPLACE INTO`/`ON DUPLICATE KEY UPDATE`, `AUTO_INCREMENT`, `MEDIUMBLOB`; PostgreSQL uses reusable `$1,$2,...` placeholders, `ON CONFLICT ... DO UPDATE SET`, `SERIAL`, `BYTEA`, and lowercase-folded unquoted identifiers (so its table/column names are all-lowercase, unlike the other three providers).
 
 ### Encryption levels (`internal/encryption`)
 Encryption is a single numeric level stored in config, checked throughout the webserver/storage layers:
@@ -95,3 +106,4 @@ Runtime config is a mix of a persisted JSON config file (`internal/configuration
 - No third-party assertion library — use the hand-rolled helpers in `internal/test/TestHelper.go` (`IsEqualString`, `IsNil`, `HttpPageResult`, etc.), all gated behind the `test` build tag. Add `//go:build test` (or `//go:build !integration && test`) to the top of new test files as appropriate.
 - `internal/test/testconfiguration` provides shared setup/teardown for tests that need a real config + database on disk.
 - Tests that touch S3 storage must work under both `awsmock` (default, via `gofakes3`) and `awstest` (real AWS, gated by env vars) tags — check `internal/storage/filesystem/s3filesystem/aws` for the pattern (`Aws.go` / `Aws_mock.go` / `Aws_slim.go` split by build tag).
+- The `mariadb`/`postgres` providers have no in-process mock (unlike sqlite, which is just a file, or redis, via `miniredis`), so their tests are gated behind `mariadbtest`/`postgrestest` tags and skipped by default — see `Mariadb_test.go`/`Postgres_test.go` header comments for the env-var setup and `make test-mariadb`/`make test-postgres` above.
